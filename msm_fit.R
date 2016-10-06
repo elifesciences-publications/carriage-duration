@@ -2,6 +2,7 @@ require(dplyr)
 require(msm)
 require(foreach)
 require(minqa)
+require(data.table)
 
 setwd("~/Documents/PhD/Maela carriage length/")
 
@@ -93,7 +94,7 @@ createDummyThreeState <- function(serotype, carried, carrying_serotypes)
 getDateBoundary <- function(obs_row, codenum, path, observations, direction=-1)
 {
   boundary <- pathTraverse(obs_row, codenum, path, direction)
-  if (path$subject[boundary+direction] == codenum)
+  if (!is.na(path$subject[boundary+direction]) & path$subject[boundary+direction] == codenum)
   {
     date_boundary <- observations$specdate[boundary+direction] + 
         (observations$specdate[boundary] - observations$specdate[boundary+direction])/2
@@ -129,7 +130,7 @@ getCarried <- function(obs_row, codenum, path, observations)
 pathTraverse <- function(obs_row, codenum, path, direction=-1)
 {
   boundary <- obs_row
-  while(path$subject[boundary+direction] == codenum)
+  while(!is.na(path$subject[boundary+direction]) & path$subject[boundary+direction] == codenum)
   {
     # Always presume a positive swab is carriage (sometimes Viterbi will output no carriage
     # due to low init and/or transition probs)
@@ -145,6 +146,29 @@ pathTraverse <- function(obs_row, codenum, path, direction=-1)
   return(boundary)
 }
 
+# Average resistance measure over a time period
+averageResistance <- function(res_vector)
+{
+  order <- c("SENSITIVE", "INTERMEDIATE", "RESISTANT")
+  ordered_vec <- ordered(res_vector, order)
+  levs <- levels(ordered_vec)
+  
+  m <- median(as.integer(ordered_vec), na.rm = T)
+  if (is.na(m))
+  {
+    median <- NA
+  }
+  else
+  {
+    if (floor(m) != m)
+    {
+      m <- floor(m)
+    }
+    median <- levs[m]
+  }
+  return(median)
+}
+
 #*********************************#
 # Main                            #
 #*********************************#
@@ -156,7 +180,7 @@ sequence_metadata <- dplyr::as_data_frame(read.delim("sequence_metadata.txt",
 sequence_metadata %<>%
   mutate(specdate=as.Date(sequence_metadata$specdate,"%d-%b-%y")) %>%
   filter(category=="INFANT") %>%
-  select(lane, specdate, codenum, serotype) %>%
+  dplyr::select(lane, specdate, codenum, serotype) %>%
   arrange(codenum, specdate)
 
 saveRDS(sequence_metadata, "sequence_metadata.Rdata")
@@ -189,7 +213,7 @@ immunology_data %<>%
   mutate(serotype=paste(combine_sero(c(whoserotype1, whoserotype2, whoserotype3)), collapse = ",")) %>%
   ungroup() %>%
   arrange(codenum, sampleday) %>%
-  select(codenum, collection, age_d, specdate, sampleday, whopnc, serotype) %>%
+  dplyr::select(codenum, collection, age_d, specdate, sampleday, whopnc, serotype) %>%
   distinct()
 
 # Routine data
@@ -210,7 +234,7 @@ routine_data %<>%
   filter(n() == 1 | whopnc != "") %>% # Identifies cases with two observations, and takes better of two
   ungroup() %>%
   arrange(codenum, sampleday) %>%
-  select(codenum, collection, age_d, specdate, sampleday, whopnc, serotype) %>%
+  dplyr::select(codenum, collection, age_d, specdate, sampleday, whopnc, serotype) %>%
   distinct()
 
 all_observations <- dplyr::rbind_list(immunology_data, routine_data)
@@ -329,6 +353,8 @@ Qm <- rbind(c(0, 0.1),
 ematrix <- rbind(c(0, 0),
                  c(0.1, 0))
 
+observed_serotypes <- observed_serotypes[-(observed_serotypes == "15B" | observed_serotypes == "15C")]
+
 foreach(i=1:length(observed_serotypes)) %do% {
   # Dummy variables for each serotype: 
   # 1 clear, 2 carrying, 3 colonised before but currently clear
@@ -363,9 +389,21 @@ models[["NT"]] <- msm(state ~ normday, subject = codenum,
 
 paths[["NT"]] <- viterbi.msm(models[["NT"]])
 
+# to fix the misclassification probability at 12%
+ematrix <- rbind(c(0, 0),
+                 c(0.12, 0))
+models[['NT_fixed']] <- msm(state ~ normday, subject = codenum, 
+                            data = NT_obs, qmatrix = Qm, 
+                            est.initprobs = T, ematrix = ematrix,
+                            opt.method = "bobyqa", 
+                            control=list(maxfun=4000, iprint=3), fixedpars = c(3))
+
 saveRDS(statetables, file="statetables.Rdata")
 saveRDS(models, file="models.Rdata")
 saveRDS(paths, file="paths.Rdata")
+
+sojourn.msm(models[['NT_fixed']])[2,]*time_dev
+envisits.msm(models[['NT_fixed']], tot = 3.32, ci="normal")
 
 # Ascertained from state tables and model fit
 good_models <- c("19F", "23F", "6B", "14", "6A/C", "NT")
@@ -475,11 +513,11 @@ age <- log(age)
 
 metadata_out <- sequence_metadata %>%
                   mutate(phenotype=pheno, fid=lane) %>%
-                  select(lane, fid, phenotype)
+                  dplyr::select(lane, fid, phenotype)
 
 covariates_out <- sequence_metadata %>%
                     mutate(age=age, carried=carried_out, fid=lane) %>%
-                    select(lane, fid, age, carried)
+                    dplyr::select(lane, fid, age, carried)
 
 write.table(metadata_out, file="length.pheno", 
             quote = F, sep="\t", row.names=F, col.names=F)
@@ -487,3 +525,84 @@ saveRDS(metadata_out, file = "metadata_out.Rdata")
 
 write.table(covariates_out, file="covariates.txt", 
             quote = F, sep="\t", row.names=F, col.names=F)
+
+# All carriage episode lengths
+pathcopy <- paths
+observed_serotypes <- observed_serotypes <- c(observed_serotypes, "NT")
+
+# Read in all resistance swabs
+resistance_metadata <- dplyr::as_data_frame(read.delim("ARI_AMR_data.csv", sep = ",",
+                                                     header=T, stringsAsFactors = F))
+resistance_metadata %<>%
+  filter(Category=="Infant") %>%
+  mutate(specdate=as.Date(Specimen.date,"%d/%m/%Y"))
+
+X <- list()
+y <- list()
+for (serotype in names(pathcopy))
+{
+  # clean up paths by removing false positives - force fitted to be observed 
+  pathcopy[[serotype]][pathcopy[[serotype]][,3] == 2, 4] = 2
+  
+  # Add in fitted state from above or below, to find start and end of carriage
+  pathcopy_new <- as.data.table(pathcopy[[serotype]])
+  pathcopy_new[, ("lag") := shift(fitted, 1), by=subject]
+  pathcopy_new[, ("lead") := shift(fitted, 1, type = "lead"), by=subject]
+
+  start_points <- which(pathcopy_new$fitted == 2 & (pathcopy_new$lag != 2 | is.na(pathcopy_new$lag)))
+  end_points <- which(pathcopy_new$fitted == 2 & (pathcopy_new$lead != 2 | is.na(pathcopy_new$lead)))
+  
+  if (length(start_points) > 0)
+  {
+    # Now construct the y and X
+    carried <- rep(0, length(start_points))
+    length <- rep(0, length(start_points))
+    age <- all_observations[start_points, "age_d"]
+    resistant <- array(data = NA, dim=c(length(start_points),7)) 
+    colnames(resistant) = c("Ceftriaxone", "Chloramphenicol", "Clindamycin", "Erythromycin", "Penicillin", "Sulpha.trimethoprim", "Tetracycline")
+    for (i in 1:length(start_points))
+    {
+      if (serotype != "NT")
+      {  
+        obsframe <- all_observations
+      }
+      else
+      {
+        obsframe <- NT_obs
+      }
+      codenum <- as.character(obsframe[start_points[i],"codenum"])
+      carried[i] <- getCarried(start_points[i], codenum, pathcopy[[serotype]], obsframe)
+      start <- getDateBoundary(start_points[i], codenum, pathcopy[[serotype]], obsframe, direction=-1)
+      end <- getDateBoundary(start_points[i], codenum, pathcopy[[serotype]], obsframe, direction=1)
+      length[i] <- as.numeric(end-start)
+      
+      # Get the AB phenotype
+      if (serotype == "15B/C")
+      {
+        swabs <- resistance_metadata %>% filter(specdate <= obsframe[end_points[i], "specdate"][[1]] & 
+                                                  specdate >= obsframe[start_points[i], "specdate"][[1]] &
+                                                  Study.code == codenum &
+                                                  (serotype == "15B" | serotype == "15C" | serotype == "15B/C")) %>%
+          dplyr::select(Ceftriaxone, Chloramphenicol, Clindamycin, Erythromycin, Penicillin, Sulpha.trimethoprim, Tetracycline)
+      }
+      else
+      {
+        swabs <- resistance_metadata %>% filter(specdate <= obsframe[end_points[i], "specdate"][[1]] & 
+                                                  specdate >= obsframe[start_points[i], "specdate"][[1]] &
+                                                  Study.code == codenum &
+                                                  serotype == serotype) %>%
+          dplyr::select(Ceftriaxone, Chloramphenicol, Clindamycin, Erythromycin, Penicillin, Sulpha.trimethoprim, Tetracycline)
+      }
+      resistant[i,] <- apply(swabs, 2, averageResistance)
+      
+    }
+    X[[serotype]] <- data.frame(age=age, carried=carried, serotype=serotype, resistant)
+    y[[serotype]] <- data.frame(length=length)
+  }
+}
+
+all_X <- do.call(rbind, X)
+all_y <- do.call(rbind, y)
+
+saveRDS(all_X, file = "all_X.Rdata")
+saveRDS(all_y, file = "all_y.Rdata")
