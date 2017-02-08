@@ -3,6 +3,7 @@ require(dplyr)
 
 # Set up data
 setwd("~/Documents/PhD/Maela carriage length/")
+order <- c("SENSITIVE", "INTERMEDIATE", "RESISTANT")
 
 mds_components <- read.csv("~/Documents/PhD/Maela carriage length/struct.covars", 
                            sep="", stringsAsFactors=FALSE)
@@ -45,11 +46,6 @@ glm.all <- glm(data = merge4, phenotype ~ as.factor(Penicillin) +
 summary(glm.all)
 plot(glm.all)
 
-
-
-
-
-order <- c("SENSITIVE", "INTERMEDIATE", "RESISTANT")
 drugs <- model.matrix(merge4$phenotype ~ 
                         ordered(merge4$Chloramphenicol, levels=c("SENSITIVE", "RESISTANT")) + 
                         ordered(merge4$Clindamycin, levels=order) + 
@@ -120,7 +116,7 @@ write.table(effect_table, file="lineage_effect_sizes.txt",
 maela.pop.cluster1 <- read.delim("~/Documents/PhD/Maela carriage length/maela.pop.cluster1.phe", header=FALSE, stringsAsFactors=FALSE)
 merge5<-merge(merge4, maela.pop.cluster1, by.x="IID",by.y="V2")
 
-baps <- model.matrix(merge5$phenotype ~ merge5$V3)[,-1]
+baps <- model.matrix(merge5$phenotype ~ factor(merge5$V3))[,-1]
 glmmod.baps <- glmnet(as.matrix(baps), merge5$phenotype, alpha = 1)
 plot(glmmod.baps,xvar="lambda",label=T)
 cv.glmmod.baps <- cv.glmnet(as.matrix(baps), merge5$phenotype, alpha = 1, nfolds = 2157)
@@ -134,6 +130,33 @@ summary(lm.baps)
 # environmental effects; Multiple R-squared:  0.04139
 summary(lm(phenotype ~ age + carried, data=merge4))
 
+# for phage data
+phage_presence <- read.table("~/Documents/PhD/Maela carriage length/phage_presence.txt", 
+                             header=FALSE, stringsAsFactors=FALSE, comment.char = "")
+phage_presence <- data.frame(phage_presence, phage.presence=phage_presence$V2)
+phage_presence[phage_presence$V2 < 5000,3] = 0
+phage_presence[phage_presence$V2 >= 5000,3] = 1
+test1 <- normalmixEM(phage_presence$V2, lambda = .5, mu = c(939, 20000), sigma = 5)
+plot(test1, density = TRUE, cex.axis=1.4, cex.lab=1.4, cex.main=1.8, main2="Longest blastn hits", xlab2="Length (bases)")
+
+merge5 = merge(merge4, phage_presence, by.x="IID", by.y="V1")
+
+all <- model.matrix(merge5$phenotype ~ 
+                      ordered(merge5$Chloramphenicol, levels=c("SENSITIVE", "RESISTANT")) + 
+                      ordered(merge5$Clindamycin, levels=order) + 
+                      ordered(merge5$Erythromycin, levels=order) + 
+                      ordered(merge5$Sulpha.trimethoprim, levels=order) + 
+                      ordered(merge5$Penicillin, levels=c("SENSITIVE", "MIC")) + 
+                      ordered(merge5$Tetracycline, levels=order) + 
+                      as.factor(merge5$serotype) +
+                      as.factor(merge5$pres))[,-1]
+glmmod.all <- glmnet(as.matrix(all), merge5$phenotype, alpha = 1)
+plot(glmmod.all,xvar="lambda",label=T)
+cv.glmmod.all <- cv.glmnet(as.matrix(all), merge5$phenotype, alpha = 1, nfolds = 2195)
+plot(cv.glmmod.all)
+coef(cv.glmmod.all, s="lambda.1se")
+
+# DATA IN PAPER FROM HERE
 # with direct swab data
 all_X <- readRDS("all_X.Rdata")
 all_y <- readRDS("all_y.Rdata")
@@ -141,6 +164,7 @@ all_y <- readRDS("all_y.Rdata")
 filtered_X <- all_X[apply(is.na(all_X), 1, sum) < 2,]
 filtered_y <- all_y[apply(is.na(all_X), 1, sum) < 2,]
 
+order <- c("SENSITIVE", "INTERMEDIATE", "RESISTANT")
 design_X <- model.matrix(filtered_y ~ 
                       ordered(filtered_X$Chloramphenicol, levels=order) + 
                       ordered(filtered_X$Clindamycin, levels=order) + 
