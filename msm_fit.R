@@ -528,7 +528,7 @@ write.table(covariates_out, file="covariates.txt",
 
 # All carriage episode lengths
 pathcopy <- paths
-observed_serotypes <- observed_serotypes <- c(observed_serotypes, "NT")
+observed_serotypes <- c(observed_serotypes, "NT")
 
 # Read in all resistance swabs
 resistance_metadata <- dplyr::as_data_frame(read.delim("ARI_AMR_data.csv", sep = ",",
